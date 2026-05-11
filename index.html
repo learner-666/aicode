@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>跳一跳 - 像素冒险</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #1a1a2e;
+  display: flex; justify-content: center; align-items: center;
+  height: 100vh; overflow: hidden;
+  font-family: 'Courier New', monospace;
+}
+canvas {
+  image-rendering: pixelated; image-rendering: crisp-edges;
+  border: 4px solid #4a4a7e;
+  box-shadow: 0 0 40px rgba(74,74,126,0.5);
+}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const W = 900, H = 500;
+canvas.width = W; canvas.height = H;
+
+const PX = 3;
+const GROUND = H - 50;
+
+const C = {
+  bg: '#1a1a2e', ground: '#3d3d5c', gline: '#5c5c8a',
+  player: '#e94560', obs: '#ff6b6b', obs2: '#ee5a24',
+  apple: '#e74c3c', heart: '#e94560',
+  title: '#f0c040', text: '#eaeaea',
+};
+
+// ── 精灵定义 ──
+const S = {
+  pRun1: [
+    '.....1111.....',
+    '....1....1....',
+    '....1.1..1....',
+    '....1....1....',
+    '....1.11.1....',
+    '....1....1....',
+    '.....1..1.....',
+    '.....1111.....',
+    '......11......',
+    '.....1..1.....',
+    '.....1..1.....',
+    '......11......',
+    '.....1..1.....',
+    '....1....1....',
+  ],
+  pRun2: [
+    '.....1111.....',
+    '....1....1....',
+    '....1.1..1....',
+    '....1....1....',
+    '....1.11.1....',
+    '....1....1....',
+    '.....1..1.....',
+    '.....1111.....',
+    '......11......',
+    '.....1..1.....',
+    '.....1..1.....',
+    '......11......',
+    '....1....1....',
+    '...1......1...',
+  ],
+  pJump: [
+    '.....1111.....',
+    '....1....1....',
+    '....1.1..1....',
+    '....1....1....',
+    '....1.11.1....',
+    '....1....1....',
+    '.....1..1.....',
+    '.....1111.....',
+    '......11......',
+    '.....1..1.....',
+    '...1......1...',
+    '..1........1..',
+    '..1........1..',
+    '...1......1...',
+  ],
+  spiky: [
+    '.......1.......',
+    '......1.1......',
+    '.....1...1.....',
+    '....1.....1....',
+    '...1.......1...',
+    '..1.........1..',
+    '.1...........1.',
+    '111111111111111',
+    '111111111111111',
+    '.1...111...1..1',
+    '..1.11111.1..1.',
+    '...1111111..1..',
+    '...111111111...',
+    '....1111111....',
+  ],
+  block: [
+    '1111111111111',
+    '1222222222221',
+    '1222222222221',
+    '1222222222221',
+    '1222222222221',
+    '1222222222221',
+    '1111111111111',
+    '1111111111111',
+    '1111111111111',
+    '1111111111111',
+    '1111111111111',
+    '1111111111111',
+  ],
+  bird: [
+    '......1.......',
+    '.....1.1......',
+    '....1...1.....',
+    '...1.....1....',
+    '..1.11111.1...',
+    '.1.1111111.1..',
+    '..1.11111.1...',
+    '...1..1..1....',
+    '....1...1.....',
+    '.....111......',
+    '......1.......',
+    '......1.......',
+  ],
+  apple: [
+    '......22......',
+    '....222222....',
+    '...22222222...',
+    '..2233333322..',
+    '.223333333322.',
+    '.233333333332.',
+    '.233333333332.',
+    '.233333333332.',
+    '.233333333332.',
+    '.233333333332.',
+    '.223333333322.',
+    '..2222222222..',
+    '...22222222...',
+    '....222222....',
+  ],
+};
+
+function sprH(s) { return S[s].length * PX; }
+function sprW(s) { return S[s][0].length * PX; }
+
+// ── 游戏状态 ──
+let state = 'START'; // START | PLAYING | OVER
+let score = 0, best = 0, lives = 1;
+let speed = 2, frame = 0;
+let goff = 0, coff = 0;
+let shake = 0;
+
+let player = null;
+let obstacles = [];
+let apples = [];
+let particles = [];
+let spaceDown = false;
+let obsTimer = 0, appleTimer = 0;
+let invincible = 0;
+
+function makePlayer() {
+  player = {
+    x: 120,
+    y: GROUND - sprH('pRun1'),
+    vy: 0,
+    w: sprW('pRun1'),
+    h: sprH('pRun1'),
+    onGround: true,
+    canDouble: false,
+    jumps: 0,
+    aframe: 0,
+    facing: 1,
+  };
+}
+
+function reset() {
+  score = 0; lives = 1; speed = 2; frame = 0;
+  goff = 0; coff = 0; shake = 0;
+  obstacles = []; apples = []; particles = [];
+  obsTimer = 0; appleTimer = 0; invincible = 0;
+  makePlayer();
+}
+
+// ── 绘制 ──
+function drawSprite(name, x, y, scale, colorMap) {
+  const def = { '1': C.obs, '2': C.apple, '3': '#d63031' };
+  const cm = { ...def, ...(colorMap || {}) };
+  const s = S[name];
+  for (let r = 0; r < s.length; r++) {
+    for (let c = 0; c < s[r].length; c++) {
+      const ch = s[r][c];
+      if (ch === '.') continue;
+      ctx.fillStyle = cm[ch] || '#fff';
+      ctx.fillRect(
+        Math.round(x + c * PX * scale),
+        Math.round(y + r * PX * scale),
+        PX * scale, PX * scale
+      );
+    }
+  }
+}
+
+function playerSprite() {
+  if (!player.onGround) return 'pJump';
+  return player.aframe < 12 ? 'pRun1' : 'pRun2';
+}
+
+function drawGround() {
+  ctx.fillStyle = C.ground;
+  ctx.fillRect(0, GROUND, W, H - GROUND);
+  ctx.fillStyle = C.gline;
+  for (let i = -32; i < W + 64; i += 32) {
+    ctx.fillRect(i - (goff % 32), GROUND, 18, 3);
+  }
+}
+
+function drawGrid() {
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)'; ctx.lineWidth = 1;
+  for (let x = 0; x < W; x += 32) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, GROUND); ctx.stroke();
+  }
+  for (let y = 0; y < GROUND; y += 32) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+}
+
+function drawClouds() {
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  for (let i = 0; i < 5; i++) {
+    const base = (coff + i * 220) % (W + 300) - 150;
+    const x = base;
+    const y = 50 + i * 45 + Math.sin(frame * 0.015 + i) * 18;
+    const sz = 40 + i * 12;
+    ctx.fillRect(x, y, sz, sz * 0.25);
+    ctx.fillRect(x + sz * 0.12, y - sz * 0.18, sz * 0.75, sz * 0.45);
+    ctx.fillRect(x + sz * 0.03, y - sz * 0.32, sz * 0.35, sz * 0.38);
+    ctx.fillRect(x + sz * 0.5, y - sz * 0.28, sz * 0.3, sz * 0.35);
+  }
+}
+
+function drawHeart(cx, cy, s) {
+  ctx.fillStyle = C.heart;
+  ctx.fillRect(cx + s, cy, s, s);
+  ctx.fillRect(cx + s * 3, cy, s, s);
+  ctx.fillRect(cx, cy + s, s * 5, s);
+  ctx.fillRect(cx + s, cy + s * 2, s, s);
+  ctx.fillRect(cx + s * 3, cy + s * 2, s, s);
+  ctx.fillRect(cx + s * 2, cy + s * 3, s, s);
+}
+
+function drawHearts() {
+  for (let i = 0; i < lives; i++) drawHeart(10 + i * 26, 36, 3);
+}
+
+function text(t, x, y, size, color) {
+  ctx.fillStyle = color;
+  ctx.font = `${size}px "Courier New", monospace`;
+  ctx.fillText(t, x, y);
+}
+
+function drawStart() {
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+  drawClouds(); drawGrid();
+  text('跳 一 跳', W / 2 - 90, 155, 38, C.title);
+  drawSprite('pJump', W / 2 - sprW('pJump') / 2, 210, 1, { '1': C.player });
+  if (Math.sin(frame * 0.08) > 0) {
+    text('按 空格键 开始游戏', W / 2 - 175, 340, 21, C.text);
+  }
+  text('操作说明', W / 2 - 50, 380, 14, '#888');
+  text('空格键 - 跳跃    双击空格 - 二阶跳', W / 2 - 175, 405, 13, '#666');
+  drawHeart(W / 2 - 12, 440, 3);
+  text('= 额外生命', W / 2 + 10, 452, 13, '#666');
+  if (best > 0) text(`最高分: ${best}`, W / 2 - 60, 485, 15, C.title);
+}
+
+function drawOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, W, H);
+  text('游戏结束', W / 2 - 80, 160, 32, C.player);
+  text(`得分: ${score}`, W / 2 - 60, 220, 24, C.title);
+  if (best > 0) text(`最高分: ${best}`, W / 2 - 70, 260, 18, '#aaa');
+  if (Math.sin(frame * 0.08) > 0) {
+    text('按 空格键 重新开始', W / 2 - 175, 330, 21, C.text);
+  }
+}
+
+// ── 障碍物与苹果 ──
+function spawnObs() {
+  const types = ['spiky', 'block'];
+  if (score > 15) types.push('bird');
+  const t = types[Math.floor(Math.random() * types.length)];
+
+  let obs = { x: W + 40, type: t, scored: false };
+  if (t === 'spiky') {
+    obs.w = sprW('spiky'); obs.h = sprH('spiky');
+    obs.y = GROUND - obs.h;
+  } else if (t === 'block') {
+    obs.w = sprW('block'); obs.h = sprH('block');
+    obs.y = GROUND - obs.h;
+  } else if (t === 'bird') {
+    obs.w = sprW('bird'); obs.h = sprH('bird');
+    obs.y = GROUND - 140 - Math.random() * 70;
+  }
+  obstacles.push(obs);
+}
+
+function spawnApple() {
+  const a = {
+    x: W + 50 + Math.random() * 250,
+    w: sprW('apple'), h: sprH('apple'),
+    y: GROUND - sprH('apple'),
+    done: false,
+  };
+  apples.push(a);
+}
+
+function particlesAt(x, y, color, n) {
+  for (let i = 0; i < n; i++) {
+    particles.push({
+      x, y,
+      vx: (Math.random() - 0.5) * 5,
+      vy: -Math.random() * 4 - 2,
+      life: 20 + Math.random() * 20,
+      color, s: 1 + Math.random() * 2,
+    });
+  }
+}
+
+// ── 碰撞 ──
+function hit(a, b) {
+  const m = 6;
+  return (
+    a.x + m < b.x + b.w - m &&
+    a.x + a.w - m > b.x + m &&
+    a.y + m < b.y + b.h - m &&
+    a.y + a.h - m > b.y + m
+  );
+}
+
+function onHitObs(obs) {
+  if (invincible > 0) return;
+  lives--;
+  shake = 14;
+  invincible = 40;
+  particlesAt(player.x + player.w / 2, player.y + player.h / 2, '#e94560', 22);
+  const i = obstacles.indexOf(obs);
+  if (i > -1) obstacles.splice(i, 1);
+  if (lives <= 0) {
+    state = 'OVER';
+    if (score > best) best = score;
+  }
+}
+
+function onCollectApple(apple) {
+  lives++;
+  particlesAt(apple.x + apple.w / 2, apple.y + apple.h / 2, '#e74c3c', 16);
+  const i = apples.indexOf(apple);
+  if (i > -1) apples.splice(i, 1);
+}
+
+// ── 更新 ──
+function update() {
+  if (state !== 'PLAYING') return;
+  frame++;
+  score = Math.floor(frame / 6);
+
+  // 速度随分数增长，上限 10
+  speed = 2 + Math.floor(score / 40);
+  if (speed > 10) speed = 10;
+
+  // 震屏衰减
+  if (shake > 0) shake *= 0.84;
+  if (shake < 0.3) shake = 0;
+
+  // 无敌帧递减
+  if (invincible > 0) invincible--;
+
+  goff = (goff + speed) % 32;
+  coff += speed * 0.3;
+
+  // ── 玩家物理 ──
+  if (player.onGround) {
+    player.y = GROUND - player.h;
+    player.vy = 0;
+    player.canDouble = true;
+    player.jumps = 0;
+  }
+
+  if (!player.onGround) {
+    player.vy += 0.7;
+    player.y += player.vy;
+    if (player.y >= GROUND - player.h) {
+      player.y = GROUND - player.h;
+      player.vy = 0;
+      player.onGround = true;
+      player.jumps = 0;
+      player.canDouble = false;
+    }
+  }
+
+  // 一段跳
+  if (spaceDown && player.onGround) {
+    player.vy = -13;
+    player.onGround = false;
+    player.jumps = 1;
+    player.canDouble = true;
+    spaceDown = false;
+  }
+  // 二阶跳
+  if (spaceDown && !player.onGround && player.canDouble && player.jumps === 1) {
+    player.vy = -11;
+    player.jumps = 2;
+    player.canDouble = false;
+    spaceDown = false;
+    particlesAt(player.x + player.w / 2, player.y + player.h, '#f0c040', 10);
+  }
+  spaceDown = false;
+
+  // 跑动动画
+  if (!player.onGround) {
+    player.aframe = (player.aframe + 1) % 24;
+  } else {
+    player.aframe = (player.aframe + 1) % 24;
+  }
+
+  // ── 生成障碍物 ──
+  obsTimer++;
+  const gap = Math.max(60, 160 - speed * 8);
+  if (obsTimer > gap + Math.random() * 70) {
+    spawnObs();
+    obsTimer = 0;
+  }
+
+  // ── 生成苹果 ──
+  appleTimer++;
+  if (appleTimer > 160 + Math.random() * 200) {
+    spawnApple();
+    appleTimer = 0;
+  }
+
+  // ── 移动障碍物 ──
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    obstacles[i].x -= speed;
+    if (obstacles[i].x < -60) {
+      if (!obstacles[i].scored) {
+        score += 5; frame += 30;
+        obstacles[i].scored = true;
+      }
+      obstacles.splice(i, 1);
+    }
+  }
+
+  // ── 移动苹果 ──
+  for (let i = apples.length - 1; i >= 0; i--) {
+    apples[i].x -= speed;
+    if (apples[i].x < -60) apples.splice(i, 1);
+  }
+
+  // ── 粒子 ──
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.1; p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  // ── 碰撞检测 ──
+  for (const obs of obstacles) {
+    if (hit(player, obs)) { onHitObs(obs); break; }
+  }
+  for (const a of apples) {
+    if (!a.done && hit(player, a)) { onCollectApple(a); break; }
+  }
+}
+
+// ── 渲染 ──
+function render() {
+  ctx.clearRect(0, 0, W, H);
+
+  if (state === 'START') { drawStart(); frame++; return; }
+
+  const sx = (Math.random() - 0.5) * shake;
+  const sy = (Math.random() - 0.5) * shake;
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  ctx.fillStyle = C.bg; ctx.fillRect(-10, -10, W + 20, H + 20);
+  drawGrid(); drawClouds(); drawGround();
+
+  // 苹果
+  for (const a of apples) drawSprite('apple', a.x, a.y, 1, { '2': C.apple, '3': '#d63031' });
+  // 障碍物
+  for (const o of obstacles) {
+    if (o.type === 'block') drawSprite('block', o.x, o.y, 1, { '1': C.obs, '2': C.obs2 });
+    else if (o.type === 'spiky') drawSprite('spiky', o.x, o.y, 1, { '1': C.obs });
+    else if (o.type === 'bird') drawSprite('bird', o.x, o.y, 1, { '1': C.obs, '2': '#ffeaa7' });
+  }
+  // 玩家（闪烁效果表示无敌）
+  if (invincible <= 0 || Math.floor(invincible / 3) % 2 === 0) {
+    drawSprite(playerSprite(), player.x, player.y, 1, { '1': C.player });
+  }
+  // 粒子
+  for (const p of particles) {
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = Math.min(1, p.life / 30);
+    ctx.fillRect(p.x, p.y, p.s * 2, p.s * 2);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+
+  // UI（不受震屏影响）
+  text(`分数: ${score}`, 10, 24, 18, C.text);
+  drawHearts();
+
+  if (state === 'OVER') drawOver();
+}
+
+function loop() { update(); render(); requestAnimationFrame(loop); }
+
+// ── 输入 ──
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.key === ' ') {
+    e.preventDefault();
+    if (state === 'START') { reset(); state = 'PLAYING'; }
+    else if (state === 'OVER') { reset(); state = 'PLAYING'; }
+    else if (state === 'PLAYING') { spaceDown = true; }
+  }
+});
+document.addEventListener('keyup', e => {
+  if (e.code === 'Space' || e.key === ' ') spaceDown = false;
+});
+
+// 触屏支持
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (state === 'START') { reset(); state = 'PLAYING'; }
+  else if (state === 'OVER') { reset(); state = 'PLAYING'; }
+  else if (state === 'PLAYING') { spaceDown = true; }
+});
+canvas.addEventListener('touchend', e => { e.preventDefault(); spaceDown = false; });
+
+reset();
+loop();
+</script>
+</body>
+</html>
